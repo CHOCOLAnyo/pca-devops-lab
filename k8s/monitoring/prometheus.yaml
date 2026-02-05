@@ -1,0 +1,134 @@
+#k8s/monitoring/prometheus.yaml
+# =====================================================================================
+# 區塊一：定義 RBAC 權限 (Role-Based Access Control)
+# 目的：落實「最小權限原則」，授權 Prometheus 存取 K8s API 以執行服務發現 (Service Discovery)。
+# =====================================================================================
+apiVersion: v1                 # [API 版本] 核心資源 v1
+kind: ServiceAccount           # [資源類型] 服務帳戶，定義 Pod 在叢集中的身分
+metadata:
+  name: prometheus-sa          # [識別名稱] 此帳戶將綁定給 Prometheus Pod 使用
+  namespace: pca-app-ns        # [命名空間] 隔離環境，確保安全性
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole                # [資源類型] 叢集角色，定義跨 Namespace 的權限規則
+metadata:
+  name: prometheus-reader        # [識別名稱] 定義一個具備讀取權限的角色
+rules:
+- apiGroups: [""]                # [權限範圍] 核心 API 群組 (Core Group)
+  resources: ["nodes", "nodes/proxy", "services", "endpoints", "pods"] # [存取資源] 監控所需的數據對象權限
+  verbs: ["get", "list", "watch"] # [允許動作] 僅限唯讀操作，禁止任何修改行為
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding         # [資源類型] 角色綁定，將身分 (SA) 與權限 (Role) 關聯
+metadata:
+  name: prometheus-reader-binding
+subjects:
+- kind: ServiceAccount           # [綁定對象] 指定身分類型
+  name: prometheus-sa            # [身分名稱] 引用上方建立的 ServiceAccount
+  namespace: pca-app-ns
+roleRef:
+  kind: ClusterRole              # [關聯權限] 指定權限類型
+  name: prometheus-reader        # [權限名稱] 引用上方建立的 ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# =====================================================================================
+# 區塊二：定義監控設定檔 (ConfigMap - Configuration as Code)
+# 目的：定義 Prometheus 的抓取邏輯與重標籤 (Relabeling) 規則。
+# =====================================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config        # [識別名稱] 設定檔物件名稱
+  namespace: pca-app-ns
+data:
+  prometheus.yml: |              # [配置內容] 核心設定檔案開始
+    global:
+      scrape_interval: 5s        # [抓取頻率] 設定數據採集間隔，5 秒可提供高解析度指標
+    
+    scrape_configs:
+      - job_name: 'kubernetes-pods'  # [任務名稱] 針對 K8s Pod 的自動化採集任務
+        
+        # [服務發現機制] 利用 K8s API 自動尋找目標，不須手動輸入 IP
+        kubernetes_sd_configs:
+        - role: pod
+
+        # [重標籤策略] 核心 SRE 技術，用於動態篩選與修改指標標籤
+        relabel_configs:
+        
+        # 規則 1：指標採集過濾 (Scrape Whitelist)
+        # 僅採集標註有 "prometheus.io/scrape: true" 的 Pod，避免抓到無關數據
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        
+        # 規則 2：動態埠號對應 (Dynamic Port Discovery)
+        # 自動讀取 Pod 的 "prometheus.io/port" 註解，確保連線至正確的 App 端口
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        
+        # 規則 3：標籤正規化 (Label Normalization)
+        # 將 K8s 原生的 Pod 名稱映射至指標的 "instance" 標籤，提升圖表辨識度
+        - source_labels: [__meta_kubernetes_pod_name]
+          action: replace
+          target_label: instance
+
+---
+# =====================================================================================
+# 區塊三：部署 Prometheus 核心實體 (Deployment)
+# 目的：啟動監控容器，並掛載 RBAC 身分與設定檔。
+# =====================================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: pca-app-ns
+spec:
+  replicas: 1                    # [副本數量] 監控控制中心保持一個實例以維持單一數據源
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:                    # [Pod 標籤] 定義 Pod 身分，供 Service 選取
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus-sa  # [權限連動] 指定 Pod 啟動時帶上的 RBAC 識別證
+      containers:
+      - name: prometheus
+        image: prom/prometheus           # [容器鏡像] 官方 Prometheus 映像檔
+        args:                            # [啟動參數]
+          - "--config.file=/etc/prometheus/prometheus.yml" # 指定載入 ConfigMap 掛載的設定檔
+        ports:
+        - containerPort: 9090            # [服務端口] 開放 9090 供 Grafana 查詢
+        
+        # [卷掛載] 將 ConfigMap 的數據內容映射為容器內的實體檔案
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/prometheus/
+      volumes:
+      - name: config-volume              # [定義卷來源]
+        configMap:
+          name: prometheus-config        # 引用上方定義的 ConfigMap 名稱
+
+---
+# =====================================================================================
+# 區塊四：內部服務網路 (Service)
+# 目的：提供穩定的 ClusterIP DNS 名稱，讓 Grafana 能夠連線獲取數據。
+# =====================================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service      # [DNS 名稱] Grafana 連線地址為 http://prometheus-service:9090
+  namespace: pca-app-ns
+spec:
+  selector:
+    app: prometheus             # [選擇器] 鎖定帶有 app=prometheus 標籤的 Pod
+  ports:
+    - port: 9090                # [對外埠號]
+      targetPort: 9090          # [容器埠號]

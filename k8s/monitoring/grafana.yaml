@@ -1,0 +1,180 @@
+#k8s/monitoring/grafana.yaml
+# =====================================================================================
+# 資源一：Grafana 自動化配置 (ConfigMap - Main Config)
+# Infrastructure as Code (IaC) 與環境一致性
+# 目的：實現「無人值守」部署，確保服務重啟後，連線設定與載入目錄能自動還原。
+# =====================================================================================
+apiVersion: v1                # [版本] Kubernetes 核心資源標準版本 v1
+kind: ConfigMap               # [類型] 用於存放文字設定檔的 K8s 資源，將配置與代碼分離
+metadata:                     # [元數據]
+  name: grafana-config        # [名稱] 給 Deployment 識別並掛載用的唯一名稱
+  namespace: pca-app-ns       # [空間] 確保與監控系統處於相同命名空間
+data:                         # [數據] 存放具體的配置檔案內容
+  # -----------------------------------------------------------------------------------
+  # 檔案 A: 資料源設定 (Datasources.yaml)
+  # 功能：讓 Grafana 啟動後自動「認主」，主動透過內部網路連線到 Prometheus。
+  # -----------------------------------------------------------------------------------
+  datasources.yaml: |         # [檔案名] 使用 "|" 導入多行字串內容
+    apiVersion: 1             # [設定版本] Grafana 配置工具的 API 版本
+    datasources:              # [清單] 定義後端數據來源清單
+    - name: Prometheus        # [UI 名稱] 在網頁端顯示的資料庫名稱標籤
+      type: prometheus        # [驅動] 指定使用 Prometheus 數據庫驅動
+      url: http://prometheus-service:9090 # [關鍵] 使用 K8s Service Name 進行內部 DNS 尋址
+      access: proxy           # [存取模式] 透過 Grafana 後端代理請求，增強通訊安全性
+      isDefault: true         # [預設值] 讓所有圖表面板自動優先使用此資料源
+
+  # -----------------------------------------------------------------------------------
+  # 檔案 B: 儀表板提供者 (Dashboards.yaml)
+  # 功能：定義自動化掃描機制，告訴 Grafana 應該去哪個目錄讀取 JSON 圖表。
+  # -----------------------------------------------------------------------------------
+  dashboards.yaml: |          # [檔案名] 使用 "|" 導入多行字串內容
+    apiVersion: 1             # [版本]
+    providers:                # [提供者]
+    - name: 'Default'         # [識別名] 提供者名稱
+      orgId: 1                # [權限] 預設組織為 1
+      folder: ''              # [UI 目錄] 載入後放置在網頁端的根目錄
+      type: file              # [載入模式] 指定採用實體檔案目錄掃描
+      disableDeletion: false  # [保護措施] 允許在 UI 上進行暫時性刪除
+      editable: true          # [編輯權限] 允許在 UI 上即時微調，適合面試時進行現場展示
+      options:
+        path: /var/lib/grafana/dashboards # [路徑] 這是容器內掃描 JSON 檔案的指定目標目錄
+
+---
+# =====================================================================================
+# 資源二：儀表板佈局代碼 (ConfigMap - Dashboard as Code)
+# 使用 instance=~'pca-app-.*' 同時監控 v1, Canary, v2。
+# 利用正則表達式排除系統雜訊 (如 kube-dns)，只鎖定目標 App。
+# =====================================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-json
+  namespace: pca-app-ns       # [空間] 必須與監控系統同步
+data:
+  # -----------------------------------------------------------------------------------
+  # 檔案：devops-dashboard.json
+  # JSON 大括號內部禁止出現 "#" 註解，否則會導致語法解析失敗。
+  # -----------------------------------------------------------------------------------
+  devops-dashboard.json: |
+    {
+      "title": "PCA SRE 核心監控面板",
+      "uid": "devops-final-canary",
+      "refresh": "5s",
+      "panels": [
+        {
+          "title": "1. 即時流量分佈 (Request Count)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum by (instance) (flask_http_request_total{instance=~'pca-app-.*'})",
+              "legendFormat": "Pod: {{instance}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "2. Pod CPU 使用率 (Cores)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            {
+              "expr": "sum(rate(process_cpu_seconds_total{instance=~'pca-app-.*'}[5m])) by (instance)",
+              "legendFormat": "CPU: {{instance}}",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "cores" } }
+        },
+        {
+          "title": "3. Pod 記憶體使用量 (MB)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            {
+              "expr": "sum(process_resident_memory_bytes{instance=~'pca-app-.*'}) by (instance)",
+              "legendFormat": "MEM: {{instance}}",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "decbytes" } }
+        }
+      ]
+    }
+
+---
+# =====================================================================================
+# 資源三：Grafana 應用程式部署 (Deployment)
+# 掛載 ConfigMap (Volumes) 與 Meta-Monitoring 實作。
+# =====================================================================================
+apiVersion: apps/v1           # [版本] apps 控制器 API 類別
+kind: Deployment              # [類型] 部署控制器，管理容器的生命週期與副本
+metadata:
+  name: grafana               # [名稱]
+  namespace: pca-app-ns       # [空間]
+spec:
+  replicas: 1                 # [副本數] 監控伺服器僅需一個實例
+  selector:
+    matchLabels:
+      app: grafana            # [選擇器] 用於管理標籤為 app=grafana 的 Pod
+  template:                   # [範本定義]
+    metadata:
+      labels:                 # [標籤]
+        app: grafana          # [身分] 讓 Service 能夠正確導引流量
+      annotations:            # [註解] 啟動自動化抓取，讓 Prometheus 也來監控 Grafana
+        prometheus.io/scrape: "true" # [指令] 開啟監控採集功能
+        prometheus.io/port: "3000"   # [端口] 指標所在的通訊埠
+    spec:
+      containers:
+      - name: grafana         # [容器名稱]
+        image: grafana/grafana # [鏡像] 使用官方維護的最新穩定版本
+        ports:
+        - containerPort: 3000 # [端口] 容器內部程式監聽的通訊埠
+        env:                  # [環境變數] 注入初始管理者帳號與密碼
+        - name: GF_SECURITY_ADMIN_USER
+          value: "admin"      # [帳號] admin
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          value: "admin"      # [密碼] admin
+
+        # -----------------------------------------------------------------------------
+        # 掛載點 (VolumeMounts)：將 ConfigMap 的數據變成本機檔案注入容器內部路徑
+        # -----------------------------------------------------------------------------
+        volumeMounts:
+        - name: config-volume # [資料源掛載] 指向下方的 config-volume
+          mountPath: /etc/grafana/provisioning/datasources/datasources.yaml # 容器內檔案位置
+          subPath: datasources.yaml  # [關鍵] 指定單一檔案掛載，防止目錄下的預設檔案被覆蓋
+        - name: config-volume # [圖表提供者掛載]
+          mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml
+          subPath: dashboards.yaml
+        - name: dashboard-json-volume # [圖表 JSON 掛載] 指向下方的 JSON Volume
+          mountPath: /var/lib/grafana/dashboards # 指向 Provider 設定中的 JSON 掃描目錄
+
+      # -----------------------------------------------------------------------------
+      # 宣告儲存卷 (Volumes)：定義數據來源物件
+      # -----------------------------------------------------------------------------
+      volumes:
+      - name: config-volume   # [設定卷] 來源為 grafana-config ConfigMap
+        configMap:
+          name: grafana-config
+      - name: dashboard-json-volume # [圖表卷] 來源為 grafana-dashboards-json ConfigMap
+        configMap:
+          name: grafana-dashboards-json
+
+---
+# =====================================================================================
+# 資源四：公網入口服務 (Service)
+# 利用 LoadBalancer 與 Cloud Provider 整合暴露服務。
+# 目的：申請 GCP External IP 地址，實現從任何地方透過網頁瀏覽監控成果。
+# =====================================================================================
+apiVersion: v1                # [版本] 核心 API v1
+kind: Service                 # [類型] 服務資源，負責網路負載平衡與導流
+metadata:
+  name: grafana-service       # [名稱] Service DNS 名稱
+  namespace: pca-app-ns       # [空間]
+spec:
+  type: LoadBalancer           # [模式] 向 Google Cloud 申請實體 External IP 地址
+  selector:
+    app: grafana               # [目標] 將流量導向標籤為 app=grafana 的 Pod
+  ports:
+    - port: 80                 # [對外端口] 使用者瀏覽器存取的通訊埠 (http://IP)
+      targetPort: 3000         # [內部端口] 轉發給 Grafana 容器實際監聽的 3000 Port

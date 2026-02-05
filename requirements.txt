@@ -1,0 +1,9 @@
+#devops-exam/requirements.txt
+# 網站伺服器框架
+flask
+# 資料庫連線套件
+redis
+# 網路請求套件
+requests
+# 讓 Flask 自動產生監控數據的套件
+prometheus-flask-exporter

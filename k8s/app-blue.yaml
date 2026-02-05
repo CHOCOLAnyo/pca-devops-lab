@@ -1,0 +1,65 @@
+#k8s/app-blue.yaml
+# -------------------------------------------------------------------------------------
+# 資源名稱：Blue 部署環境 (v1)
+# 核心功能：定義目前正在提供服務的「舊版本」實體，作為藍綠部署的穩定基準
+# -------------------------------------------------------------------------------------
+apiVersion: apps/v1             # [固定] K8s API 版本 / [說明] Deployment 屬於 apps/v1 核心群組
+kind: Deployment                # [固定] 資源類型 / [說明] 宣告此物件為「部署控制器」
+metadata:                       # [固定] 元數據區塊
+  name: pca-app-v1              # [名稱] 部署名稱 / [識別] 加上 v1 後綴以區隔不同版本實體
+  namespace: pca-app-ns         # [空間] 命名空間 / [隔離] 確保 Pod 運行於獨立環境，便於權限控管
+spec:                           # [固定] 規格說明書
+  replicas: 2                   # [副本] 副本數量 / [HA] 維持 2 台實現高可用性，避免單點故障
+  selector:                     # [固定] 標籤選擇器 / [邏輯] 定義 Deployment 如何找到它管轄的 Pod
+    matchLabels:                # [固定] 匹配模式
+      app: pca-app              # [標籤] 應用程式名稱 / [連動] 對應下方 template 的 labels
+      version: v1               # [版本] 版本標籤 / [關鍵] 鎖定管理 v1 實體，避免誤管 v2
+  template:                     # [固定] Pod 模具 / [說明] 定義新生成的 Pod 長什麼樣子
+    metadata:                   # [固定] Pod 元數據
+      labels:                   # [固定] 標籤設定
+        app: pca-app            # [標籤] 應用識別 / [連動] 供 Service 導流使用
+        version: v1             # [版本] 版本識別 / [連動] Service Selector 透過此標籤決定流量去向
+      
+      # =============================================================
+      # [SRE 關鍵新增] Prometheus 監控標記 (Annotations)
+      # 功能：啟用 Service Discovery，讓監控系統自動發現此 Pod
+      # =============================================================
+      annotations:
+        prometheus.io/scrape: "true"   # [監控開關] 設為 true，允許 Prometheus 抓取指標
+        prometheus.io/port: "5000"     # [監控端口] 明確指定應用程式運行的 Port (Flask 預設 5000)
+        prometheus.io/path: "/metrics" # [指標路徑] 指定 Exporter 吐出數據的網址路徑
+
+    spec:                       # [固定] Pod 規格內容
+      containers:               # [固定] 容器列表
+      - name: pca-app-container # [名稱] 容器名稱 / [識別] 用於查看 log 的識別符
+        # -----------------------------------------------------------------------------
+        # 映像檔設定
+        # -----------------------------------------------------------------------------
+        image: asia-east1-docker.pkg.dev/danny-pca-lab/pca-repo/flask-app:v1 # [來源] 映像檔路徑 (v1 固定標籤)
+        imagePullPolicy: Always # [策略] 映像檔拉取策略 / [關鍵] 強制每次重啟都去倉庫檢查更新 (解決固定 Tag 更新問題)
+        ports:                  # [端口] 網路設定
+        - containerPort: 5000   # [端口] 容器內聽的 Port / [連動] 必須與 Flask 程式碼設定一致
+        
+        # -----------------------------------------------------------------------------
+        # 環境變數 (Environment Variables) - 應用程式配置
+        # -----------------------------------------------------------------------------
+        env:
+        - name: REDIS_HOST      # [變數] Redis 連線主機
+          value: "redis-service" # [數值] K8s Service DNS 名稱 / [解耦] 不寫死 IP，利用 K8s 內部 DNS 解析
+        - name: APP_VERSION     # [變數] 應用程式版本
+          value: "v1"           # [數值] v1 字串 / [UI] 用於網頁前端顯示 "(v1)" 字樣
+        
+        # -----------------------------------------------------------------------------
+        # 機敏資訊注入 (Secrets) - DevSecOps 資安實踐
+        # 說明：不將密碼明碼寫在 YAML 中，而是從 K8s Secret 動態掛載
+        # -----------------------------------------------------------------------------
+        - name: TELEGRAM_TOKEN  # [變數] Telegram Bot Token
+          valueFrom:            # [來源] 指定從外部讀取
+            secretKeyRef:       # [參照] 引用 Secret 物件
+              name: telegram-secret # [名稱] Secret 名稱 (由 Ansible 建立)
+              key: TELEGRAM_TOKEN   # [鍵值] Secret 內的 Key
+        - name: TELEGRAM_CHAT_ID # [變數] 接收通知的 Chat ID
+          valueFrom:
+            secretKeyRef:
+              name: telegram-secret
+              key: TELEGRAM_CHAT_ID

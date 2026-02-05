@@ -1,0 +1,37 @@
+# ----------------------------------------------------------
+# 標題：Kubernetes 基礎設施初始化 (Ansible Playbook)
+# 功能：自動建立 Namespace 與 Secret 安全憑證
+# ----------------------------------------------------------
+- name: 初始化 GKE 應用程式運行環境          # [固定] 描述整體 Playbook 任務名稱
+  hosts: localhost                        # [固定] 在執行環境本地端運行 (GitHub Runner)
+  connection: local                       # [固定] 本地連接模式
+  tasks:                                  # [固定] 任務清單開始
+
+    # ------------------------------------------------------
+    # 任務一：建立隔離的運行空間 (Namespace)
+    # ------------------------------------------------------
+    - name: 建立專屬 Namespace (pca-app-ns) # [自訂] 任務描述
+      kubernetes.core.k8s:                # [套件] 使用 K8s 官方核心模組
+        state: present                    # [參數] 確保資源存在 (具備冪等性，重複跑也不會壞)
+        definition:                       # [固定] 定義 K8s 物件內容
+          apiVersion: v1                  # [固定] API 版本
+          kind: Namespace                 # [固定] 資源類型為命名空間
+          metadata:                       # [固定] 元數據區塊
+            name: pca-app-ns              # [自訂] 命名空間名稱 / [關鍵] 實現專案資源隔離
+
+    # ------------------------------------------------------
+    # 任務二：建立 Telegram 安全憑證 (Secret)
+    # ------------------------------------------------------
+    - name: 建立 Telegram 安全憑證           # [自訂] 任務描述
+      kubernetes.core.k8s:                # [套件] 使用 K8s 官方核心模組
+        state: present                    # [參數] 確保資源存在
+        namespace: pca-app-ns             # [關鍵] 指定將 Secret 建立在剛才的專屬空間中
+        definition:                       # [固定] 定義 K8s 物件內容
+          apiVersion: v1                  # [固定] API 版本
+          kind: Secret                    # [固定] 資源類型 / [識別] 用於存放機敏資料
+          metadata:                       # [固定] 元數據區塊
+            name: telegram-secret         # [自訂] 資源名稱 / [連動] 供後續 app.yaml 參照讀取
+          type: Opaque                    # [參數] 一般加密類型
+          stringData:                     # [關鍵] 接受明碼輸入，Ansible 會自動轉 Base64 儲存
+            TELEGRAM_TOKEN: "{{ telegram_token }}"      # [參數] 接收來自 GitHub Actions 的環境變數
+            TELEGRAM_CHAT_ID: "{{ telegram_chat_id }}"  # [參數] 接收來自 GitHub Actions 的環境變數

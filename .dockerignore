@@ -1,0 +1,21 @@
+#devops-exam/.dockerignore
+# 忽略 Git 版本控制檔
+.git
+.gitignore
+
+# 忽略 Terraform 的暫存檔與執行檔 (這通常是佔空間的最大元兇！)
+.terraform
+terraform/
+*.tfstate
+*.tfstate.backup
+
+# 忽略 Kubernetes 設定檔 (這是部署用的，不需要包進程式裡)
+k8s/
+
+# 忽略雜物
+misc/
+cmd/
+
+# 忽略 Python 的快取
+__pycache__
+*.pyc

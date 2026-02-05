@@ -1,0 +1,4 @@
+# 檔案路徑: ansible/requirements.yml
+collections:
+  - name: kubernetes.core
+    version: 2.4.0
