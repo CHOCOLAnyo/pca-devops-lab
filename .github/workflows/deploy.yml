@@ -75,7 +75,7 @@ jobs:                                                # [任務區塊] 宣告流�
         run: |                                       # [ run ]
           kubectl apply -f k8s/service.yaml          # 部署應用服務，向 GCP 申請 LoadBalancer IP
           kubectl apply -f k8s/monitoring/grafana.yaml # 部署監控服務
-          sleep 20                                   # 延遲 20 秒，確保 LoadBalancer 分配公網 IP 完畢
+          sleep 120                                   # 延遲 120 秒，確保 LoadBalancer 分配公網 IP 完畢
 
       - name: Notify Telegram (Ready to Review)      # [步驟標題] 基礎設施就緒通知
         if: success()                                # [ if ] 僅在上述步驟「全部成功」時才執行
