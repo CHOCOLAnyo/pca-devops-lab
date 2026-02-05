@@ -1,151 +1,194 @@
-# =====================================================================================================
-# 檔案名稱：.github/workflows/deploy.yml
-# 專案名稱：PCA DevOps Exam - SRE Observability & Alerting
-# 核心價值：落實 Infrastructure as Code (IaC) 與自動化部署，結合即時告警監控。
-# =====================================================================================================
+# ===================================================================================================== # [區隔線] 檔案開頭
+# 檔案名稱：.github/workflows/deploy.yml                                                                # [備註] 定義檔案於專案中的路徑
+# 專案名稱：PCA DevOps Exam - SRE Observability & Alerting                                              # [備註] 專案專屬名稱
+# 核心價值：落實 IaC、自動化部署、CI/CD 映像檔預建構、以及即時 Telegram 告警。                           # [備註] 定義自動化核心目標
+# ===================================================================================================== # [區隔線] 標頭結尾
 
-name: PCA DevOps Exam Pipeline (Final Alerting)     # [工作流名稱] 定義此 CI/CD 在 GitHub 管理介面的顯示抬頭
+name: PCA DevOps Exam Pipeline (Final Alerting)     # [工作流名稱] 定義此 CI/CD 在 GitHub Actions 介面的抬頭
 
-on:                                                  # [觸發] 監聽事件的啟動點
-  push:                                              # [推送事件] 當有程式碼推送到 GitHub 時
-    branches: [ "main" ]                             # [分支過濾] 僅限 main 分支的推送
-  workflow_dispatch:                                  # [手動觸發] 在 GitHub Web UI 提供按鈕
+on:                                                  # [觸發區塊] 定義自動化流程的啟動時機
+  push:                                              # [事件] 當有程式碼推送到 GitHub 倉庫時
+    branches: [ "main" ]                             # [過濾] 僅限於推送到 main 分支時才啟動
+  workflow_dispatch:                                  # [手動功能] 允許使用者在 GitHub 網頁上手動點擊啟動按鈕
 
-env:                                                 # [環境區塊] 宣告跨 Job 使用的變數
-  PROJECT_ID: danny-pca-lab                          # [GCP] 專案唯一標識符
-  GKE_CLUSTER: pca-cluster                           # [GKE] 目標 Kubernetes 叢集名稱
-  GKE_ZONE: asia-east1-a                             # [GKE] 叢集所在的區域
-  IMAGE_NAME: flask-app                              # [Docker] 映像檔基礎名稱
-  REPO_NAME: pca-repo                                # [Registry] Artifact Registry 的存儲庫名稱
-  REGION: asia-east1                                 # [GCP] 地理區域
+env:                                                 # [環境區塊] 定義全域通用的變數
+  PROJECT_ID: danny-pca-lab                          # [變數] GCP 專案的 ID 標識符
+  GKE_CLUSTER: pca-cluster                           # [變數] 目標 GKE 叢集的名稱
+  GKE_ZONE: asia-east1-a                             # [變數] GKE 叢集部署的具體區域
+  IMAGE_NAME: flask-app                              # [變數] Docker 映像檔的基礎名稱
+  REPO_NAME: pca-repo                                # [變數] Artifact Registry 存儲庫名稱
+  REGION: asia-east1                                 # [變數] GCP 的地理區域位置
 
-jobs:                                                # [任務區塊]
-  # =================================================================================================
-  # Job 1: 基礎設施與基準線準備 (Setup Infrastructure & Baseline v1)
-  # [SRE 考點]：先有監控與穩定版，再進行變更。
-  # =================================================================================================
-  setup-infrastructure:
-    name: Setup Infra & Baseline v1
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code                          # [步驟] 獲取原始碼
+jobs:                                                # [任務區塊] 宣告流水線包含的所有獨立任務
+  # ================================================================================================= # [區隔線] Job 1 開始
+  # Job 1: 基礎設施與基準線部署 (Setup Infrastructure & Baseline v1)                                     # [備註] 負責環境初始化與 v1 部署
+  # ================================================================================================= # [區隔線]
+  setup-infrastructure:                              # [任務 ID] 基礎設施準備階段
+    name: Setup Infra & Baseline v1                  # [任務名稱] 顯示在流程圖中的標題
+    runs-on: ubuntu-latest                           # [執行器] 使用 GitHub 提供的最新 Ubuntu 虛擬機
+    steps:                                           # [步驟清單] 任務內的具體操作步驟
+      - name: Checkout Code                          # [步驟標題] 獲取原始碼
+        uses: actions/checkout@v3                    # [引用] 下載當前倉庫代碼
+
+      - name: Authenticate to GCP                    # [步驟標題] 登入 Google Cloud
+        uses: google-github-actions/auth@v1          # [引用] 使用 GCP 官方認證工具
+        with:                                        # [參數傳入]
+          credentials_json: ${{ secrets.GCP_SA_KEY }} # [金鑰] 引用加密的 GCP 服務帳號金鑰
+
+      - name: Setup Terraform                        # [步驟標題] 安裝 Terraform
+        uses: hashicorp/setup-terraform@v2           # [引用] 安裝 HashiCorp 官方工具
+        with:                                        # [參數傳入]
+          terraform_version: 1.5.7                   # [版本] 鎖定 IaC 工具版本
+
+      - name: Terraform Apply                        # [步驟標題] 建立雲端資源
+        run: |                                       # [腳本執行]
+          cd terraform                               # [指令] 進入 Terraform 資料夾
+          terraform init                             # [指令] 初始化 Provider 與 Backend
+          terraform apply -auto-approve              # [指令] 自動執行部署而不需人工確認
+        env:                                         # [環境變數] 注入部署權限
+          GOOGLE_CREDENTIALS: ${{ secrets.GCP_SA_KEY }} # [參數] 賦予 Terraform 部署資源權限
+
+      - name: Get GKE Credentials                    # [步驟標題] 獲取 GKE 控制權
+        uses: google-github-actions/get-gke-credentials@v1 # [引用] 官方工具
+        with:                                        # [參數傳入]
+          cluster_name: ${{ env.GKE_CLUSTER }}       # [參數] 目標叢集名稱
+          location: ${{ env.GKE_ZONE }}              # [參數] 目標區域
+
+      - name: Run Ansible Playbook                   # [步驟標題] 執行 Ansible 配置
+        working-directory: ./ansible                 # [目錄] 在 ansible 資料夾內執行
+        run: |                                       # [腳本執行]
+          pip install ansible kubernetes             # [指令] 安裝自動化運維套件
+          ansible-galaxy install -r requirements.yml # [指令] 下載 Ansible K8s 模組
+          ansible-playbook k8s_init.yml \
+            -e "telegram_token=${{ secrets.TG_TOKEN }}" \
+            -e "telegram_chat_id=${{ secrets.TG_CHAT_ID }}" # [指令] 執行劇本並注入 Telegram 參數
+        env:                                         # [環境變數] 
+          ANSIBLE_PYTHON_INTERPRETER: /usr/bin/python3 # [指令] 強制使用 Python3
+
+      - name: Configure Docker                       # [步驟標題] 認證 Docker Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev # [指令] 授權 Docker 訪問 GCP 倉庫
+
+      - name: Build and Push v1                      # [步驟標題] 建構並推送 v1 映像檔
+        run: |                                       # [腳本執行]
+          FULL_PATH="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}" # [路徑] 定義完整路徑
+          docker build -t ${FULL_PATH}:v1 .          # [指令] 打包 v1 映像檔
+          docker push ${FULL_PATH}:v1                 # [指令] 推送映像檔至倉庫
+
+      - name: Deploy Baseline (v1 & Monitoring)      # [步驟標題] 部署基準線環境
+        run: |                                       # [腳本執行]
+          kubectl apply -f k8s/redis.yaml            # [指令] 啟動 Redis 資料庫
+          kubectl apply -f k8s/monitoring/prometheus.yaml # [指令] 啟動 Prometheus 監控
+          kubectl apply -f k8s/monitoring/grafana.yaml    # [指令] 啟動 Grafana 儀表板
+          kubectl apply -f k8s/app-blue.yaml         # [指令] 啟動 Flask App v1
+          kubectl apply -f k8s/service.yaml          # [指令] 啟動 LoadBalancer 服務
+
+      - name: Notify Telegram (Wait for IP & v1 Ready) # [步驟標題] IP 輪詢與 Telegram 通知
+        if: success()                                # [判斷] 僅在前面成功時執行
+        env:                                         # [環境變數]
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}          # [參數] Telegram Token
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}      # [參數] Telegram ID
+        run: |                                       # [腳本執行]
+          echo "等待 GCP 分配 IP (最長 3 分鐘)..."     # [備註] 顯示狀態
+          for i in {1..18}; do                       # [循環] 執行 18 次輪詢
+            APP_IP=$(kubectl get svc pca-app-service -n pca-app-ns -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "") # [指令] 抓取 IP
+            GRAFANA_IP=$(kubectl get svc grafana-service -n pca-app-ns -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "") # [指令] 抓取 IP
+            if [ ! -z "$APP_IP" ] && [ ! -z "$GRAFANA_IP" ]; then break; fi # [判斷] 若 IP 出現則跳出
+            sleep 10                                 # [指令] 等待 10 秒
+          done                                       # [結束循環]
+          F_APP_IP=${APP_IP:-"Pending"}              # [處理] 若無 IP 則顯示 Pending
+          F_GRAFANA_IP=${GRAFANA_IP:-"Pending"}      # [處理] 若無 IP 則顯示 Pending
+          MSG="✅ [Baseline Ready] v1 已就緒！%0A🌍 網站(v1): http://${F_APP_IP}%0A📊 Grafana: http://${F_GRAFANA_IP}" # [定義] 訊息內容
+          curl -f -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" -d chat_id="${TG_CHAT_ID}" -d text="$MSG" # [指令] 發送通知
+
+  # ================================================================================================= # [區隔線] Job 2 開始
+  # Job 2: 金絲雀部署 (Deploy Canary)                                                                     # [備註] 負責 v2 金絲雀部署
+  # ================================================================================================= # [區隔線]
+  deploy-canary:                                     # [任務 ID]
+    name: Build & Release Canary                     # [任務名稱]
+    needs: setup-infrastructure                      # [依賴] 必須等 Job 1 成功才啟動
+    runs-on: ubuntu-latest                           # [執行器] Ubuntu
+    environment: canary-release                      # [閘門] 開啟人工審核機制
+    steps:                                           # [步驟清單]
+      - name: Checkout Code                          # [步驟] 下載代碼
         uses: actions/checkout@v3
 
-      - name: Authenticate to GCP                    # [步驟] 登入 Google Cloud
+      - name: Authenticate to GCP                    # [步驟] GCP 認證
         uses: google-github-actions/auth@v1
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Setup Terraform                        # [步驟] 配置 Terraform 環境
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.5.7
+      - name: Configure Docker                       # [步驟] 授權 Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
 
-      - name: Terraform Apply                        # [步驟] 建立雲端基礎設施 (VPC/GKE/Repo)
-        run: |
-          cd terraform
-          terraform init
-          terraform apply -auto-approve 
-        env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+      - name: Generate SHA Tag                       # [步驟標題] 生成版本標籤
+        id: get_tag                                  # [ID] 識別碼
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT # [指令] 提取 Git Hash
 
-      - name: Get GKE Credentials                    # [步驟] 獲取叢集操作權限
+      - name: Build and Push v2                      # [步驟標題] 建構 v2 映像檔
+        env:                                         # [環境變數]
+          SHA: ${{ steps.get_tag.outputs.sha_short }} # [變數] 讀取 Hash
+        run: |                                       # [腳本執行]
+          FULL_PATH="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}" # [定義]
+          docker build -t ${FULL_PATH}:${SHA} -t ${FULL_PATH}:v2 . # [指令] 打包 v2
+          docker push ${FULL_PATH}:${SHA}             # [指令] 推送 SHA 版本
+          docker push ${FULL_IMAGE_PATH}:v2          # [指令] 推送 v2 版本
+
+      - name: Get GKE Credentials                    # [步驟] 獲取憑證
         uses: google-github-actions/get-gke-credentials@v1
         with:
           cluster_name: ${{ env.GKE_CLUSTER }}
           location: ${{ env.GKE_ZONE }}
 
-      - name: Run Ansible Playbook                   # [步驟] 執行 K8s 命名空間與告警配置
-        working-directory: ./ansible
-        run: |
-          pip install ansible kubernetes
-          ansible-galaxy install -r requirements.yml 
-          ansible-playbook k8s_init.yml \
-            -e "telegram_token=${{ secrets.TG_TOKEN }}" \
-            -e "telegram_chat_id=${{ secrets.TG_CHAT_ID }}"
-        env:
-          ANSIBLE_PYTHON_INTERPRETER: /usr/bin/python3
+      - name: Deploy Canary Only                     # [步驟標題] 執行金絲雀發佈
+        run: |                                       # [腳本執行]
+          kubectl apply -f k8s/canary-deployment.yaml # [指令] 部署 v2 Pod
+          kubectl rollout restart deployment pca-app-canary -n pca-app-ns # [指令] 重啟 Pod 以更新映像檔
 
-      - name: Deploy Baseline (v1 & Monitoring)      # [步驟標題] 部署基準線環境 (v1/Redis/監控)
-        run: |                                       # [ run ]
-          # 1. 部署資料庫與監控系統 (SRE 核心依賴)
-          kubectl apply -f k8s/redis.yaml
-          kubectl apply -f k8s/monitoring/prometheus.yaml
-          kubectl apply -f k8s/monitoring/grafana.yaml
-          
-          # 2. 部署穩定版 v1 (Blue) 確保審核前已有可運作系統
-          kubectl apply -f k8s/app-blue.yaml
-          
-          # 3. 部署 Service 入口並向 GCP 申請 LoadBalancer IP
-          kubectl apply -f k8s/service.yaml
-
-      - name: Notify Telegram (Wait for IP & v1 Ready) # [步驟標題] 執行 IP 輪詢與就緒通知
+      - name: Notify Telegram (Canary Released)       # [步驟標題] 金絲雀上線通知
         if: success()
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |                                       # [ run ] 專業 IP 輪詢邏輯
-          echo "等待 GCP LoadBalancer 分配外部 IP (最長等待 3 分鐘)..."
-          for i in {1..18}; do
-            # 透過 JSONPath 抓取 IP 位址
-            APP_IP=$(kubectl get svc pca-app-service -n pca-app-ns -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-            GRAFANA_IP=$(kubectl get svc grafana-service -n pca-app-ns -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-            
-            # 判斷是否兩者皆已獲取 IP
-            if [ ! -z "$APP_IP" ] && [ ! -z "$GRAFANA_IP" ]; then
-              echo "✅ IP 資源獲取成功！"
-              break
-            fi
-            echo "⌛ IP 尚未就緒，等待 10 秒... ($i/18)"
-            sleep 10
-          done
+        run: |                                       # [腳本執行]
+          APP_IP=$(kubectl get svc pca-app-service -n pca-app-ns -o jsonpath='{.status.loadBalancer.ingress[0].ip}') # [指令]
+          MSG="🐤 [Canary Live] v2 已上線！%0A🌍 測試網址: http://${APP_IP}" # [內容]
+          curl -f -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" -d chat_id="${TG_CHAT_ID}" -d text="$MSG" # [指令]
 
-          # 變數防護：若超時則標註 Pending
-          FINAL_APP_IP=${APP_IP:-"Pending(請稍後刷新)"}
-          FINAL_GRAFANA_IP=${GRAFANA_IP:-"Pending(請稍後刷新)"}
-
-          MSG="✅ [Baseline Ready] v1 基準線已就緒！%0A🌍 網站(v1): http://${FINAL_APP_IP}%0A📊 Grafana: http://${FINAL_GRAFANA_IP}%0A確認 v1 穩定後請進行 Job 2 金絲雀核准。"
-          curl -f -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" -d chat_id="${TG_CHAT_ID}" -d text="$MSG"
-
-      - name: Notify Telegram (Job 1 Failed)         # [步驟] 故障告警
-        if: failure()
-        env:
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          curl -f -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-          -d chat_id="${TG_CHAT_ID}" \
-          -d text="❌ [Alert] Job 1 (基礎設施/v1) 部署失敗！"
-
-  # =================================================================================================
-  # Job 2: 金絲雀部署 (Deploy Canary) - 需人工核准
-  # =================================================================================================
-  deploy-canary:
-    name: Build & Release Canary
-    needs: setup-infrastructure
-    runs-on: ubuntu-latest
-    environment: canary-release                      # [閘門] 人工核准點
-    steps:
-      - name: Checkout Code
+  # ================================================================================================= # [區隔線] Job 3 開始
+  # Job 3: 全面切換 (Full Rollout)                                                                        # [備註] 流量 100% 切換至 v2
+  # ================================================================================================= # [區隔線]
+  full-rollout:                                      # [任務 ID]
+    name: Approval & Full Rollout                    # [任務名稱]
+    needs: deploy-canary                             # [依賴] 等金絲雀完成
+    runs-on: ubuntu-latest                           # [執行器] Ubuntu
+    environment: production                          # [閘門] 開啟第二次人工核准
+    steps:                                           # [步驟清單]
+      - name: Checkout Code                          # [步驟] 下載代碼
         uses: actions/checkout@v3
 
-      - name: Authenticate to GCP
+      - name: Authenticate to GCP                    # [步驟] GCP 認證
         uses: google-github-actions/auth@v1
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Configure Docker
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+      - name: Get GKE Credentials                    # [步驟] 獲取憑證
+        uses: google-github-actions/get-gke-credentials@v1
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_ZONE }}
 
-      - name: Generate SHA Tag
-        id: get_tag
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      - name: Full Rollout (v2)                      # [步驟標題] 執行全面切換
+        run: |                                       # [腳本執行]
+          kubectl apply -f k8s/app-green.yaml        # [指令] 部署 v2 正式版 Pod
+          kubectl patch svc pca-app-service -n pca-app-ns -p "{\"spec\":{\"selector\":{\"version\":\"v2\"}}}" # [指令] 修改 Selector 切換流量
+          kubectl delete -f k8s/canary-deployment.yaml --ignore-not-found=true # [指令] 清理測試版資源
 
-      - name: Build and Push
+      - name: Notify Telegram (Success)               # [步驟標題] 最終成功通知
+        if: success()
         env:
-          SHA: ${{ steps.get_tag.outputs.sha_short }}
-        run: |
-          FULL_IMAGE_PATH="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}"
-          docker build -t ${FULL_IMAGE_PATH}:${SHA} -t ${FULL_IMAGE_PATH}:v2 .
-          docker push ${FULL_IMAGE_PATH}:${SHA}
-          docker push ${FULL_IMAGE_PATH}:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |                                       # [腳本執行]
+          APP_IP=$(kubectl get svc pca-app-service -n pca-app-ns -o jsonpath='{.status.loadBalancer.ingress[0].ip}') # [指令]
+          MSG="🚀 [Full Rollout] 100% 切換至 v2 完成！" # [內容]
+          curl -f -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" -d chat_id="${TG_CHAT_ID}" -d text="$MSG" # [指令]
