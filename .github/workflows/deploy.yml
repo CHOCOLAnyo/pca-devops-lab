@@ -10,7 +10,7 @@ name: PCA DevOps Exam Pipeline (Final Alerting)     # [工作流名稱] 定義�
 on:                                                  # [觸發] 監聽事件的啟動點
   push:                                              # [推送事件] 當有程式碼推送到 GitHub 時
     branches: [ "main" ]                             # [分支過濾] 僅限 main 分支的推送，保護生產環境穩定性
-  workflow_dispatch:                                 # [手動觸發] 在 GitHub Web UI 提供按鈕，允許人工啟動流程
+  workflow_dispatch:                                  # [手動觸發] 在 GitHub Web UI 提供按鈕，允許人工啟動流程
 
 # [全域環境變數]：集中管理雲端資源參數，實現「一次定義，全域生效」
 env:                                                 # [環境區塊] 宣告跨 Job 使用的變數
@@ -26,7 +26,7 @@ jobs:                                                # [任務區塊] 宣告流�
   # Job 1: 基礎設施準備 (Setup Infrastructure)
   # [SRE 考點]：IaC (Terraform) 與配置管理 (Ansible) 的深度整合
   # =================================================================================================
-  setup-infrastructure:                              # [任務 ID] 基礎設施準備
+  setup-infrastructure:                               # [任務 ID] 基礎設施準備
     name: Setup Infra & Config                       # [任務名稱] 顯示在流程圖中的標籤
     runs-on: ubuntu-latest                           # [執行器] 使用 GitHub 提供之最新 Ubuntu 虛擬環境
     steps:                                           # [步驟清單] 任務內具體的操作流程
@@ -58,12 +58,16 @@ jobs:                                                # [任務區塊] 宣告流�
           location: ${{ env.GKE_ZONE }}              # [參數] 目標叢集區域
 
       - name: Run Ansible Playbook                   # [步驟標題] 執行配置管理與監控組件初始化
+        # [SRE 修正]：指定工作目錄為 ansible 資料夾，避免路徑解析衝突
+        working-directory: ./ansible
         run: |                                       # [ run ] 執行腳本
           pip install ansible kubernetes             # 安裝 Ansible 與 K8s 連動所需的 Python 套件
-          ansible-galaxy install -r ansible/requirements.yml # 安裝 Ansible 的 K8s 外掛模組
-          ansible-playbook ansible/k8s_init.yml \    # 執行劇本，配置 K8s ConfigMap 與 Namespace
-            -e "telegram_token=${{ secrets.TG_TOKEN }}" \ # [注入] 透過命令行傳入 Telegram 機器人 Token
-            -e "telegram_chat_id=${{ secrets.TG_CHAT_ID }}" # [注入] 透過命令行傳入 Telegram 接收 ID
+          # [修正]：移除路徑中的 ansible/ 前綴，因為已在 working-directory 內
+          ansible-galaxy install -r requirements.yml 
+          # [修正]：移除續接符號 \ 後方的註解，確保 Shell 指令連續性
+          ansible-playbook k8s_init.yml \
+            -e "telegram_token=${{ secrets.TG_TOKEN }}" \
+            -e "telegram_chat_id=${{ secrets.TG_CHAT_ID }}"
         env:                                         # [ env ]
           ANSIBLE_PYTHON_INTERPRETER: /usr/bin/python3 # 強制指定 Python3 作為 Ansible 指令器
 
@@ -79,7 +83,6 @@ jobs:                                                # [任務區塊] 宣告流�
           TG_TOKEN: ${{ secrets.TG_TOKEN }}          # Telegram Token
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}      # Telegram Chat ID
         run: |                                       # [ run ]
-          # 利用 jsonpath 獲取 LB 的實體 IP
           APP_IP=$(kubectl get svc pca-app-service -n pca-app-ns -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || echo "Pending")
           GRAFANA_IP=$(kubectl get svc grafana-service -n pca-app-ns -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || echo "Pending")
           MSG="✅ [Infra Ready] 基礎建設就緒！%0A🌍 網站: http://${APP_IP}%0A📊 Grafana: http://${GRAFANA_IP}%0A確認後請進行審核。"
